@@ -521,7 +521,17 @@ def seed_distinct_sums_1_2   := Erdos350.distinctSubsetSums_1_2
 def seed_sic_overlap_sq_3 := OpenQuantumProblem23.sicOverlapSq_three
 def seed_bb84_not_sic     := OpenQuantumProblem23.bb84Family_not_isSICFamily
 
-/-- Domain seed names — the 16 FC100 test-lemma wrappers defined in §9. -/
+-- ── Additional proved closed FC100 declarations ────────────────
+-- `{1,2,4}.IsMaximalSidonSetIn 4` — proved by refine + decide (Erdos42)
+def seed_maximal_sidon := Erdos42.example_maximal_sidon
+-- `({3,5,7} : Set ℕ).IsPrimeProgressionOfLength 3` — proved by aesop+norm_num (Erdos141)
+def seed_first_three_odd_primes := Erdos141.first_three_odd_primes
+-- `congruentNumber 7` — proved (Wikipedia/CongruentNumber.lean)
+def seed_congruent_7 := CongruentNumber.congruentNumber_7
+-- `lcmInterval 62 8 < lcmInterval 52 7` — proved by decide (Erdos678)
+def seed_lcm_lt_example := Erdos678.lcmInterval_lt_example3
+
+/-- Domain seed names — the 20 FC100 test-lemma wrappers defined in §9. -/
 def domainSeedNames : List Name := [
   `seed_petersen_size,
   `seed_petersen_szeged,
@@ -539,6 +549,10 @@ def domainSeedNames : List Name := [
   `seed_distinct_sums_1_2,
   `seed_sic_overlap_sq_3,
   `seed_bb84_not_sic,
+  `seed_maximal_sidon,
+  `seed_first_three_odd_primes,
+  `seed_congruent_7,
+  `seed_lcm_lt_example,
 ]
 
 -- ================================================================
