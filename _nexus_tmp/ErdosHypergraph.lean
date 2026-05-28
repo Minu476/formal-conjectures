@@ -154,6 +154,38 @@ def addGoalNode (g : Hypergraph) (goalText : String) : Hypergraph :=
 end Hypergraph
 
 -- ================================================================
+-- §1.5  JSON SERIALISATION
+--   Writes the in-memory hypergraph to disk so it persists between runs.
+--   Called at the end of §8.  No external dependency — pure String ops.
+-- ================================================================
+
+private def jsonStr (s : String) : String :=
+  let escaped := s.replace "\\" "\\\\" |>.replace "\"" "\\\"" |>.replace "\n" "\\n"
+  "\"" ++ escaped ++ "\""
+
+private def jsonArr (items : List String) : String :=
+  "[" ++ String.intercalate "," items ++ "]"
+
+private def jsonObj (kvs : List (String × String)) : String :=
+  "{" ++ String.intercalate "," (kvs.map fun (k, v) => jsonStr k ++ ":" ++ v) ++ "}"
+
+namespace Hypergraph
+
+/-- Serialise the hypergraph to a compact JSON string.
+    Write to disk with `IO.FS.writeFile path (g.toJSON)`. -/
+def toJSON (g : Hypergraph) : String :=
+  let nodeItems := g.nodes.toList.map fun (h, text) =>
+    jsonObj [("hash", s!"{h}"), ("text", jsonStr text)]
+  let edgeItems := g.edges.toList.foldl (fun acc (_, es) =>
+    acc ++ es.toList.map fun e =>
+      jsonObj [("fn",     jsonStr e.function),
+               ("inputs", jsonArr (e.inputs.map jsonStr)),
+               ("output", jsonStr e.output)]) []
+  jsonObj [("nodes", jsonArr nodeItems), ("edges", jsonArr edgeItems)]
+
+end Hypergraph
+
+-- ================================================================
 -- §2.5  AND/OR BACKWARD-CHAINING SEARCH
 --   OR  : findSome? over candidate edges (first that closes wins)
 --   AND : foldlM over an edge's inputs in the Option monad
@@ -272,6 +304,76 @@ def seedNames : List Name := [
   `seed_card_insert,
   `seed_card_range,
   `seed_finset_prod_nonneg,
+]
+
+-- ================================================================
+-- §9  DOMAIN SEEDS — FC100 test-lemma wrapper theorems
+--
+-- KEY INSIGHT: `theorem seed_X := X` has proof term `X` (a constant).
+--   → `getUsedConstants [seed_X] = [X]`
+--   → `extractEdge X`: type has no ∀-quantified variables → LEAF EDGE
+--   → leaf edge output = ppExpr(X.type) = exactly what §8 injected
+--   → backward search for that string: PROVED!
+--
+-- ELIGIBILITY: each theorem must be
+--   (a) locally proved without `sorry`
+--   (b) a closed statement — no ∀-bound variables (neither data nor Prop)
+--       so the ppExpr of the type is a complete closed string that
+--       exactly matches the node injected in §8.
+-- Note: `def` is used instead of `theorem` because Lean 4.27 requires
+-- an explicit type annotation for `theorem name := expr`.
+-- Using `def` still stores the proof term correctly for getUsedConstants.
+-- ================================================================
+
+-- ── Graph theory (WrittenOnTheWallII.Test) ─────────────────────
+-- All proved by `decide +native` or similar:
+def seed_petersen_size    := WrittenOnTheWallII.Test.petersen_size
+def seed_petersen_szeged  := WrittenOnTheWallII.Test.petersen_szeged
+def seed_petersen_residue := WrittenOnTheWallII.Test.petersen_residue
+def seed_C6_size          := WrittenOnTheWallII.Test.C6_size
+
+-- ── Pell numbers ───────────────────────────────────────────────
+-- `pellNumber 2 = 2 := rfl` — a pure definitional equality
+def seed_pell_two := PellNumbers.pellNumber_two
+
+-- ── OEIS numerical sequences ───────────────────────────────────
+-- Each proved by `norm_num`, `decide`, or `simp +decide`:
+def seed_oeis280831_0 := OeisA280831.hasSquareCondition_0
+def seed_oeis231201_8 := OeisA231201.primeCondition_8
+def seed_oeis232174_2 := OeisA232174.hasPrimeRepresentation_2
+def seed_oeis228828_2 := OeisA228828.a_two
+def seed_oeis56777_65 := OeisA56777.a_65
+def seed_oeis67720_1  := OeisA67720.a_1
+def seed_oeis67720_6  := OeisA67720.a_6
+
+-- ── Erdős problems ─────────────────────────────────────────────
+-- Both proved by `norm_num`/`decide`/`fin_cases`:
+def seed_unitary_perfect_60  := Erdos1052.isUnitaryPerfect_60
+def seed_distinct_sums_1_2   := Erdos350.distinctSubsetSums_1_2
+
+-- ── Quantum information (OpenQuantumProblem23) ─────────────────
+-- Both proved without sorry in the local repo:
+def seed_sic_overlap_sq_3 := OpenQuantumProblem23.sicOverlapSq_three
+def seed_bb84_not_sic     := OpenQuantumProblem23.bb84Family_not_isSICFamily
+
+/-- Domain seed names — the 16 FC100 test-lemma wrappers defined in §9. -/
+def domainSeedNames : List Name := [
+  `seed_petersen_size,
+  `seed_petersen_szeged,
+  `seed_petersen_residue,
+  `seed_C6_size,
+  `seed_pell_two,
+  `seed_oeis280831_0,
+  `seed_oeis231201_8,
+  `seed_oeis232174_2,
+  `seed_oeis228828_2,
+  `seed_oeis56777_65,
+  `seed_oeis67720_1,
+  `seed_oeis67720_6,
+  `seed_unitary_perfect_60,
+  `seed_distinct_sums_1_2,
+  `seed_sic_overlap_sq_3,
+  `seed_bb84_not_sic,
 ]
 
 -- ================================================================
@@ -456,8 +558,8 @@ def fc100Decls : List Name := [
 
 open Elab Command in
 #eval show CommandElabM Unit from do
-  -- Step 1: build edge graph from 15 Mathlib seeds
-  let g ← buildHypergraph seedNames
+  -- Step 1: build edge graph from 15 Mathlib seeds + 16 FC100 domain wrappers
+  let g ← buildHypergraph (seedNames ++ domainSeedNames)
   IO.eprintln s!"[§8] Mathlib seed graph: {g.nodeCount} nodes, {g.edgeCount} edges"
   -- Step 2: inject all 100 FC100 theorem types as goal nodes (targets)
   let env ← getEnv
@@ -501,3 +603,6 @@ open Elab Command in
   IO.eprintln s!"  GAP    : {gap} / 100"
   IO.eprintln s!"  (GAP = honest: no path through current Mathlib edges)"
   IO.eprintln s!"  Next: add domain-specific seeds from external proof repos"
+  -- ── Step 4: persist graph to disk ───────────────────────────
+  IO.FS.writeFile "_nexus_tmp/hypergraph.json" g.toJSON
+  IO.eprintln s!"[§8] Persisted to _nexus_tmp/hypergraph.json"
