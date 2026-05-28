@@ -3,6 +3,7 @@
 -- Run: cd formal-conjectures && lake env lean _nexus_tmp/ErdosHypergraph.lean
 
 import FormalConjectures.Util.ProblemImports
+import FormalConjectures.Subsets.FC100SolvedSet1
 
 /-!
   Architecture (frozen 2026-05-27):
@@ -145,6 +146,10 @@ def nodeCount (g : Hypergraph) : Nat := g.nodes.size
 /-- Total number of hyperedges across all output nodes. -/
 def edgeCount (g : Hypergraph) : Nat :=
   g.edges.toList.foldl (fun acc (_, es) => acc + es.size) 0
+
+/-- Add a pure goal node (no edge) — used to inject Erdős theorem types as targets. -/
+def addGoalNode (g : Hypergraph) (goalText : String) : Hypergraph :=
+  { g with nodes := g.nodes.insert (hash goalText) goalText }
 
 end Hypergraph
 
@@ -334,3 +339,165 @@ open Elab Command in
   let sorted := pairs.toArray.qsort fun a b => a.2 > b.2
   for (shape, n) in sorted.toSubarray 0 (min 15 sorted.size) do
     IO.eprintln s!"  [{n}] {shape}"
+
+-- ================================================================
+-- §8  FC100 ERDŐS NODE INJECTION + FULL SEARCH
+--
+-- All 100 formally-solved declarations from FC100SolvedSet1 are now
+-- in the environment (oleans cached from `lake build`).
+-- We inject each theorem's type as a goal node, then run AND/OR search.
+-- PROVED = backward-chain from current Mathlib edges reaches the type.
+-- GAP    = type is in the graph but no path exists yet → honest gap report.
+-- ================================================================
+
+/-- The 100 declarations from FormalConjectures.Subsets.FC100SolvedSet1. -/
+def fc100Decls : List Name := [
+  `WrittenOnTheWallII.Test.petersen_size,
+  `WrittenOnTheWallII.GraphConjecture13.conjecture13,
+  `OpenQuantumProblem35.ame_3_exists,
+  `LychrelNumbers.eventually_palindrome_base10,
+  `Erdos42.example_maximal_sidon,
+  `Mathoverflow75792.Reachable.complexity,
+  `OeisA280831.hasSquareCondition_0,
+  `Erdos141.first_three_odd_primes,
+  `WrittenOnTheWallII.GraphConjecture33.conjecture33,
+  `MonochromaticQuantumGraph.eqSystem4_has_solution_d2,
+  `OeisA228828.a_two,
+  `Erdos399.erdos_399.variants.cambie,
+  `Erdos349.exists_t_for_k_disjoint_segments,
+  `Erdos686.erdos_686.variants.four_three,
+  `OpenQuantumProblem23.hasConstantOverlapSq_singleton,
+  `WrittenOnTheWallII.Test.house_radius,
+  `Erdos678.lcmInterval_lt_example3,
+  `Gourevitch.gourevitch_series_identity,
+  `WrittenOnTheWallII.GraphConjecture16.conjecture16,
+  `Erdos12.erdos_12.variants.erdos_sarkozy,
+  `Mahler32.mahler_conjecture.variants.consequence,
+  `DegreeSequencesTriangleFree.lemma2_d,
+  `Kaplansky.UnitConjecture.counterexamples.ii,
+  `Erdos697.erdos_697.parts.i,
+  `Erdos61.erdos_61.variants.bnss23,
+  `Erdos968.erdos_968.variants.sum_abs_diff_isTheta_log_sq,
+  `RamanujanTau.ramanujan_petersson,
+  `Green14.green_14_quadratic,
+  `Erdos1063.erdos_1063.variants.cambie_upper_bound,
+  `WrittenOnTheWallII.Test.petersen_residue,
+  `Erdos697.density_exists,
+  `Green14.W_3_15,
+  `OpenQuantumProblem35.ame_2_exists,
+  `Erdos392.erdos_392.variants.implication,
+  `Erdos886.erdos_886.variants.rosenfeld_infinite,
+  `OpenQuantumProblem23.qubitSICFamily_pairwise,
+  `Erdos835.johnsonGraph_18_9_chromaticNumber,
+  `OeisA56777.a_65,
+  `Erdos41.erdos_41.variants.pairwise,
+  `OeisA232174.hasPrimeRepresentation_2,
+  `Erdos350.distinctSubsetSums_1_2,
+  `Arxiv.«2602.05192».finiteAdditiveConvolution_monic',
+  `Erdos295.erdos_295.variants.erdos_straus,
+  `Erdos36.M_four,
+  `Erdos590.erdos_590,
+  `Arxiv.«1308.0994».KTExtendsK,
+  `Erdos198.erdos_198.variants.concrete,
+  `Erdos513.erdos_513.variants.lower_bound,
+  `Erdos198.baumgartner_strong,
+  `Erdos617.erdos_617.variants.r_eq_4,
+  `Erdos1038.erdos_1038.parts.ii,
+  `OeisA231201.primeCondition_8,
+  `Erdos56.maxWeaklyDivisible_one,
+  `Erdos17.isClusterPrime_97_isLeast_non_cluster,
+  `BealConjecture.flt_of_beal_conjecture,
+  `Arxiv.«1609.08688».maximalLength_ge_of_isSquare,
+  `RiemannZetaValues.infinite_irrational_at_odd,
+  `AgohGiuga.isWeakGiuga_iff_sum_primeFactors,
+  `OeisA6697.count_false_morphism,
+  `Mathoverflow10799.μ_half_eq_uniform,
+  `OeisA67720.a_6,
+  `OpenQuantumProblem13.Qubit.star_smul_mul_smul,
+  `Erdos920.erdos_920.variants.k_eq_3,
+  `Erdos26.erdos_26.variants.rusza,
+  `InverseGalois.inverse_galois_problem.variants.symmetric_group,
+  `Erdos1067.erdos_1067.variants.infinite_edge_connectivity,
+  `Erdos1074.erdos_1074.variants.EHSNumbers_init,
+  `Erdos26.not_isThick_of_finite,
+  `Erdos50.erdos_50_schoenberg,
+  `Erdos951.erdos_951.variants.isBeurlingPrimes,
+  `Erdos965.erdos_965.variants.generalization,
+  `Erdos985.erdos_985.variants.two_three_five_primitive_root,
+  `PellNumbers.pellNumber_two,
+  `WrittenOnTheWallII.Test.C6_size,
+  `BusyBeaver.sanity_check,
+  `OpenQuantumProblem13.Qubit.firstCol_normSq,
+  `Erdos263.erdos_263.variants.sub_doubly_exponential,
+  `Arxiv.«1609.08688».tripleProduct_const,
+  `Erdos317.erdos_317.variants.counterexample,
+  `OpenQuantumProblem23.sicOverlapSq_three,
+  `Erdos442.erdos_442.variants.tao,
+  `AgohGiuga.korselts_criterion,
+  `Erdos1054.f_undefined_at_2,
+  `Erdos503.erdos_503.variants.R3,
+  `OeisA63880.a_of_primitive_mul_squarefree,
+  `Erdos1142.erdos_1142.variants.mientka_weitzenkamp,
+  `CongruentNumber.congruentNumber_7,
+  `WrittenOnTheWallII.Test.petersen_szeged,
+  `WrittenOnTheWallII.Test.petersen_radius,
+  `Erdos590.erdos_590.variants.ge_three_false,
+  `Erdos494.erdos_494.variants.product,
+  `Green29.green_29.variant,
+  `Erdos865.erdos_865.variants.k2,
+  `Hadamard.HadamardConjecture.variants.first_cases,
+  `Mathoverflow10799.boundaryCount_univ,
+  `Erdos457.erdos_457,
+  `OpenQuantumProblem23.bb84Family_not_isSICFamily,
+  `Green32.hasGap_empty,
+  `Erdos1052.isUnitaryPerfect_60,
+  `OeisA67720.a_1,
+]
+
+open Elab Command in
+#eval show CommandElabM Unit from do
+  -- Step 1: build edge graph from 15 Mathlib seeds
+  let g ← buildHypergraph seedNames
+  IO.eprintln s!"[§8] Mathlib seed graph: {g.nodeCount} nodes, {g.edgeCount} edges"
+  -- Step 2: inject all 100 FC100 theorem types as goal nodes (targets)
+  let env ← getEnv
+  let mut g := g
+  let mut injected := 0
+  let mut missing := 0
+  for name in fc100Decls do
+    match env.find? name with
+    | none =>
+      IO.eprintln s!"[warn] {name} not in env"
+      missing := missing + 1
+    | some ci =>
+      let mResult ← liftCoreM (MetaM.run (ppExpr ci.type))
+      let typeStr := mResult.1.pretty
+      g := g.addGoalNode typeStr
+      injected := injected + 1
+  IO.eprintln s!"[§8] Injected {injected} Erdős types as nodes ({missing} missing)"
+  IO.eprintln s!"[§8] Graph now: {g.nodeCount} nodes, {g.edgeCount} edges"
+  IO.eprintln ""
+  -- Step 3: run AND/OR search for each of the 100
+  let mut proved := 0
+  let mut gap := 0
+  for name in fc100Decls do
+    match env.find? name with
+    | none => pure ()
+    | some ci =>
+      let mResult ← liftCoreM (MetaM.run (ppExpr ci.type))
+      let typeStr := mResult.1.pretty
+      -- First line of type gives a clean preview without truncation issues
+      let preview := (typeStr.splitOn "\n").headD typeStr
+      match searchProof g typeStr with
+      | some steps =>
+        proved := proved + 1
+        IO.eprintln s!"[PROVED] {name}  ({steps.length} step)"
+      | none =>
+        gap := gap + 1
+        IO.eprintln s!"[GAP]    {name}  ⊢  {preview}"
+  IO.eprintln ""
+  IO.eprintln s!"══ FC100 Summary ══════════════════════════════════"
+  IO.eprintln s!"  PROVED : {proved} / 100"
+  IO.eprintln s!"  GAP    : {gap} / 100"
+  IO.eprintln s!"  (GAP = honest: no path through current Mathlib edges)"
+  IO.eprintln s!"  Next: add domain-specific seeds from external proof repos"
