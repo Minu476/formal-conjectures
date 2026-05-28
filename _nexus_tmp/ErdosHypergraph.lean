@@ -223,52 +223,97 @@ def searchProof (g : Hypergraph) (goal : String) (maxDepth : Nat := 50)
   proveGoal g goal maxDepth {}
 
 -- ================================================================
--- §2.6  UNIFICATION-BASED SEARCH  (isDefEq, no typeclass synthesis)
+-- §2.6  UNIFICATION-BASED AND/OR SEARCH  (isDefEq, no typeclass synthesis)
 --
--- Uses `isDefEq` to match a lemma's conclusion against the goal type.
+-- Uses `isDefEq` to match lemma conclusions against the goal type.
 -- Avoids `MVarId.apply` because apply triggers typeclass synthesis,
--- which can cascade deep into Mathlib and take minutes per trial.
+-- which cascades through Mathlib and takes minutes per trial.
 --
--- Strategy (depth-1):
---   For each edge, decompose the lemma type with forallMetaTelescope
---   (creating fresh MVars for all ∀ binders), then check whether the
---   conclusion is definitionally equal to the goal type. If yes AND
---   the lemma has no Prop-kinded premises, the goal is PROVED.
+-- Architecture (two non-recursive MetaM functions):
+--   tryCloseD1 — depth-1: lemma conclusion ≅ goal AND no Prop premises
+--   tryCloseD2 — depth-2: lemma conclusion ≅ goal AND every Prop premise
+--                is closeable at depth-1 by another lemma
 --
--- Each trial runs in a FRESH MetaM.run (no save/restore overhead).
+-- State hygiene: one fresh MetaM.run per goal; withoutModifyingState
+-- isolates every edge trial so failed unifications don't pollute the
+-- MVar environment for the next candidate.
 -- ================================================================
 
+open Lean Meta in
+private def propSort : Expr := Expr.sort Level.zero
+
+open Lean Meta in
+private def collectPropArgs (args : Array Expr) : MetaM (Array Expr) :=
+  args.filterM fun a => do
+    let s ← whnf (← inferType (← inferType a))
+    return s == propSort
+
+open Lean Meta in
+/-- Depth-1 close: find an edge whose conclusion unifies with `goalTy`
+    and has no Prop-kinded premises.  Returns trace on success. -/
+private def tryCloseD1
+    (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
+    : MetaM (Option (List (String × String))) := do
+  for edge in allEdges do
+    let some ci := env.find? edge.lemmaName | continue
+    let result ← withoutModifyingState do
+      try
+        let (args, _, concl) ← forallMetaTelescope ci.type
+        unless ← isDefEq goalTy concl do return none
+        let propArgs ← collectPropArgs args
+        if propArgs.isEmpty then return some [(edge.function, edge.output)]
+        else return none
+      catch _ => return none
+    if let some steps := result then return some steps
+  return none
+
+open Lean Meta in
+/-- Depth-2 close: first tries depth-1; then tries each edge whose Prop
+    premises are ALL closeable at depth-1 by another lemma.
+    Returns trace on success. -/
+private def tryCloseD2
+    (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
+    : MetaM (Option (List (String × String))) := do
+  -- Attempt depth-1 first (fast path).
+  if let some steps ← tryCloseD1 allEdges env goalTy then
+    return some steps
+  -- Depth-2: edge L closes goal; each Prop premise of L closed by depth-1.
+  for edge in allEdges do
+    let some ci := env.find? edge.lemmaName | continue
+    let result ← withoutModifyingState do
+      try
+        let (args, _, concl) ← forallMetaTelescope ci.type
+        unless ← isDefEq goalTy concl do return none
+        let propArgs ← collectPropArgs args
+        if propArgs.isEmpty then return none  -- already handled above
+        -- Close each Prop premise at depth-1; collect proof steps.
+        -- foldlM short-circuits on first failure (returns none).
+        let subStepsOpt ← propArgs.foldlM (fun acc premMVar => do
+          match acc with
+          | none => return none
+          | some stepsAcc =>
+            let premTy ← instantiateMVars (← inferType premMVar)
+            match ← tryCloseD1 allEdges env premTy with
+            | none   => return none
+            | some s => return some (stepsAcc ++ s)
+        ) (some ([] : List (String × String)))
+        match subStepsOpt with
+        | none      => return none
+        | some subs => return some (subs ++ [(edge.function, edge.output)])
+      catch _ => return none
+    if let some steps := result then return some steps
+  return none
+
 open Lean Meta Elab Command in
-/-- Check whether `goalType` is directly provable by any edge in `g`.
-    Uses `isDefEq` (no typeclass synthesis).  Depth-1: lemma must have
-    no Prop-kinded premises (i.e. it is "closed" — no subgoals remain). -/
-def searchProofMeta (g : Hypergraph) (goalType : Expr) (maxDepth : Nat := 1)
+/-- Unification-based proof search (isDefEq, no typeclass synthesis).
+    maxDepth=1: depth-1 only.  maxDepth≥2: depth-2 (default). -/
+def searchProofMeta (g : Hypergraph) (goalType : Expr) (maxDepth : Nat := 2)
     : CommandElabM (Option (List (String × String))) := do
   let env ← getEnv
-  for edge in g.allEdges do
-    let some ci := env.find? edge.lemmaName | continue
-    -- Fresh MetaM context per trial: no save/restore overhead.
-    let (matched, _) ← liftCoreM <| MetaM.run do
-      try
-        -- forallMetaTelescope: instantiate all ∀ binders with fresh MVars
-        -- so the conclusion becomes a "wildcard" pattern.
-        let (args, _, concl) ← forallMetaTelescope ci.type
-        -- isDefEq: full unification, no typeclass synthesis, fast fail.
-        if ← isDefEq goalType concl then
-          -- Depth-1 leaf check: no Prop-kinded premises.
-          -- Inline exprProp (Expr.sort Level.zero) since it's defined later in §3.
-          let propSort : Expr := Expr.sort Level.zero
-          let propArgs ← args.filterM fun a => do
-            let t ← inferType a
-            let s ← whnf (← inferType t)
-            return s == propSort
-          return propArgs.isEmpty
-        else
-          return false
-      catch _ => return false
-    if matched then
-      return some [(edge.function, edge.output)]
-  return none
+  let (result, _) ← liftCoreM <|
+    MetaM.run (if maxDepth <= 1 then tryCloseD1 g.allEdges env goalType
+               else tryCloseD2 g.allEdges env goalType)
+  return result
 
 -- ================================================================
 -- §3  TYPE DECOMPOSITION  (MetaM)
@@ -663,7 +708,7 @@ open Elab Command in
   IO.eprintln s!"══ FC100 Summary ══════════════════════════════════"
   IO.eprintln s!"  PROVED : {proved} / 100"
   IO.eprintln s!"  GAP    : {gap} / 100"
-  IO.eprintln s!"  Search : MVarId.apply + DiscrTree (unification-based)"
+  IO.eprintln s!"  Search : isDefEq unification, depth≤2 (no typeclass synthesis)"
   -- ── Step 4: persist graph to disk ───────────────────────────
   IO.FS.writeFile "_nexus_tmp/hypergraph.json" g.toJSON
   IO.eprintln s!"[§8] Persisted to _nexus_tmp/hypergraph.json"
