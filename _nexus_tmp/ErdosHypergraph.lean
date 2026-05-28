@@ -278,6 +278,16 @@ private def collectPropArgs (args : Array Expr) : MetaM (Array Expr) :=
     let s ← whnf (← inferType (← inferType a))
     return s == propSort
 
+/-- Diagnostic for a goal that the engine couldn't prove.
+    Captured as a byproduct of the depth-2 search — zero extra cost. -/
+structure GapInfo where
+  /-- The lemma whose conclusion matched the goal body. -/
+  edgeName       : String
+  /-- Premises successfully closed (at depth-1) before getting stuck. -/
+  closedPremises : List String
+  /-- The premise that couldn't be closed — the concrete research target. -/
+  stuckAt        : String
+
 open Lean Meta in
 /-- Depth-1 close: find an edge whose conclusion unifies with `goalTy`
     and has no Prop-kinded premises.  Returns trace on success.
@@ -327,56 +337,106 @@ private def tryCloseD1Commit
       restoreState saved
       pure false
     if matched then return some [(edge.function, edge.output)]
+  -- Fallback: check local hypotheses introduced by forallTelescope binder stripping.
+  -- When the goal was ∀-stripped (e.g. `∀ {d : ℕ} (hd : 2 ≤ d), P d`), Prop binders
+  -- like `hd_fv : 2 ≤ d_fv` live in the MetaM local context and can close premises
+  -- without needing a separate edge lemma.
+  -- ⚠ SOUNDNESS: only Prop-sorted locals are considered (data fvars like `n : ℕ` are
+  -- excluded by the `declSort == propSort` check below).
+  let lctx ← getLCtx
+  for ldecl in lctx.decls.toArray do
+    let some ldecl := ldecl | continue
+    if ldecl.isImplementationDetail then continue
+    let declSort ← try whnf (← inferType ldecl.type) catch _ => continue
+    unless declSort == propSort do continue
+    let saved ← saveState
+    let hitAsm ← try isDefEq goalTy ldecl.type catch _ => do restoreState saved; pure false
+    if hitAsm then
+      return some [(s!"assumption:{ldecl.userName}", (← ppExpr ldecl.type).pretty)]
+    restoreState saved
   return none
 
 open Lean Meta in
 /-- Depth-2 close: first tries depth-1; then tries each edge whose Prop
-    premises are ALL closeable at depth-1 by another lemma.
-    Returns trace on success.
+    premises are ALL closeable at depth-1 (or by local assumption fallback).
+    Returns (proof trace, gap diagnostic) — gap is Some only when no proof found.
     Uses tryCloseD1Commit for sub-premises so that mvar assignments from
-    closing premise N constrain the type of premise N+1. -/
+    closing premise N constrain the type of premise N+1.
+    GapInfo records the best partial progress at zero extra cost — collected
+    during the normal search, not a second pass. -/
 private def tryCloseD2
     (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
-    : MetaM (Option (List (String × String))) := do
+    : MetaM (Option (List (String × String)) × Option GapInfo) := do
   -- Attempt depth-1 first (fast path).
   if let some steps ← tryCloseD1 allEdges env goalTy then
-    return some steps
+    return (some steps, none)
   -- Depth-2: edge L closes goal; each Prop premise of L closed at depth-1.
+  -- Track best partial progress for the gap-map diagnostic.
+  let mut bestGap : Option GapInfo := none
+  let mut bestGapScore := 0
   for edge in allEdges do
     let some ci := env.find? edge.lemmaName | continue
     let result ← withoutModifyingState do
       try
         let (args, _, concl) ← forallMetaTelescope ci.type
-        unless ← isDefEq goalTy concl do return none
+        unless ← isDefEq goalTy concl do return (none, none)
         let propArgs ← collectPropArgs args
-        if propArgs.isEmpty then return none  -- already handled above
-        -- Close each Prop premise using tryCloseD1Commit so assignments
-        -- from premise N propagate to the instantiated type of premise N+1.
-        let subStepsOpt ← propArgs.foldlM (fun acc premMVar => do
-          match acc with
-          | none => return none
-          | some stepsAcc =>
-            let premTy ← instantiateMVars (← inferType premMVar)
-            match ← tryCloseD1Commit allEdges env premTy with
-            | none   => return none
-            | some s => return some (stepsAcc ++ s)
-        ) (some ([] : List (String × String)))
-        match subStepsOpt with
-        | none      => return none
-        | some subs => return some (subs ++ [(edge.function, edge.output)])
-      catch _ => return none
-    if let some steps := result then return some steps
-  return none
+        if propArgs.isEmpty then return (none, none)  -- already handled above
+        -- Close each Prop premise; track which close and which gets stuck.
+        -- tryCloseD1Commit commits assignments from premise N so they constrain
+        -- the instantiated type of premise N+1 (see §2.6 soundness note).
+        let mut subSteps : List (String × String) := []
+        let mut closed   : List String := []
+        let mut stuckAt  : Option String := none
+        for pmv in propArgs do
+          let premTy ← instantiateMVars (← inferType pmv)
+          match ← tryCloseD1Commit allEdges env premTy with
+          | none   =>
+            stuckAt := some (← ppExpr premTy).pretty
+            break
+          | some s =>
+            closed   := closed ++ [(← ppExpr premTy).pretty]
+            subSteps := subSteps ++ s
+        match stuckAt with
+        | some stuck =>
+          return (none, some { edgeName := edge.function
+                             , closedPremises := closed
+                             , stuckAt := stuck })
+        | none =>
+          return (some (subSteps ++ [(edge.function, edge.output)]), none)
+      catch _ => return (none, none)
+    match result with
+    | (some steps, _) => return (some steps, none)
+    | (none, some gap) =>
+      if gap.closedPremises.length ≥ bestGapScore then
+        bestGapScore := gap.closedPremises.length
+        bestGap := some gap
+    | (none, none) => pure ()
+  return (none, bestGap)
 
 open Lean Meta Elab Command in
-/-- Unification-based proof search (isDefEq, no typeclass synthesis).
-    maxDepth=1: depth-1 only.  maxDepth≥2: depth-2 (default). -/
+/-- Unification-based proof search (isDefEq + linear edge scan, no typeclass synthesis).
+    ⟶ Binder stripping: leading ∀ binders are stripped via `forallTelescope` (fvars,
+      NOT mvars — mvars reopen the withoutModifyingState vulnerability; see §2.6 note).
+      After stripping, parameterized goals like `∀ (b : Bool), P b` match seeds of the
+      same type.  Prop binders like `(hd : 2 ≤ d)` become local fvars closed by the
+      assumption fallback in `tryCloseD1Commit`.
+    Returns (proof trace, gap diagnostic) — gap is Some only when no proof was found.
+    maxDepth=1: depth-1 only.  maxDepth≥2: depth-2 + gap tracking (default). -/
 def searchProofMeta (g : Hypergraph) (goalType : Expr) (maxDepth : Nat := 2)
-    : CommandElabM (Option (List (String × String))) := do
+    : CommandElabM (Option (List (String × String)) × Option GapInfo) := do
   let env ← getEnv
-  let (result, _) ← liftCoreM <|
-    MetaM.run (if maxDepth <= 1 then tryCloseD1 g.allEdges env goalType
-               else tryCloseD2 g.allEdges env goalType)
+  let (result, _) ← liftCoreM <| MetaM.run do
+    -- Strip leading ∀ binders using forallTelescope (fvars, not mvars).
+    -- ⚠ forallTelescope (fvars) ≠ forallMetaTelescope (mvars):
+    --   fvars are opaque — they only unify with themselves (SOUND).
+    --   mvars can be freely assigned by isDefEq — same leak as the old
+    --   withoutModifyingState bug in tryCloseD1Commit (UNSOUND on goal side).
+    -- Fvars from stripping live in the MetaM local context, enabling the
+    -- assumption fallback in tryCloseD1Commit to close Prop premises.
+    forallTelescope goalType fun _fvars body => do
+      if maxDepth <= 1 then return (← tryCloseD1 g.allEdges env body, none)
+      else tryCloseD2 g.allEdges env body
   return result
 
 -- ================================================================
@@ -531,7 +591,34 @@ def seed_congruent_7 := CongruentNumber.congruentNumber_7
 -- `lcmInterval 62 8 < lcmInterval 52 7` — proved by decide (Erdos678)
 def seed_lcm_lt_example := Erdos678.lcmInterval_lt_example3
 
-/-- Domain seed names — the 20 FC100 test-lemma wrappers defined in §9. -/
+-- ── Parameterized proved FC100 goals (data-only binders) ────────────────────────
+-- These have ∀ binders over data types (Bool, ℕ, ℂ, Matrix, etc.).
+-- With forallTelescope stripping the goal body matches the seed conclusion at depth-1.
+def seed_count_false_morphism      := OeisA6697.count_false_morphism
+def seed_μ_half_eq_uniform         := @Mathoverflow10799.μ_half_eq_uniform
+  -- ^^ `@` required: {n : ℕ} is an implicit binder that Lean can't synthesize without context.
+def seed_boundaryCount_univ        := Mathoverflow10799.boundaryCount_univ
+def seed_star_smul_mul_smul        := OpenQuantumProblem13.Qubit.star_smul_mul_smul
+def seed_firstCol_normSq           := OpenQuantumProblem13.Qubit.firstCol_normSq
+def seed_hasConstantOverlapSq_sing := @OpenQuantumProblem23.hasConstantOverlapSq_singleton
+  -- ^^ `@` required: {d : ℕ} is an implicit binder.
+def seed_hasGap_empty              := @Green32.hasGap_empty
+  -- ^^ `@` required: {p : ℕ} is an implicit binder.
+
+-- ── Parameterized proved FC100 goals (Prop-binder assumptions) ─────────────────
+-- These have Prop-kinded ∀ binders like `(hd : 2 ≤ d)`.  After stripping,
+-- the Prop fvars live in the local context; the assumption fallback in
+-- tryCloseD1Commit closes them without needing a separate edge lemma.
+def seed_ame_2_exists              := @OpenQuantumProblem35.ame_2_exists
+  -- ^^ `@` required: {d : ℕ} is an implicit binder.
+def seed_ame_3_exists              := @OpenQuantumProblem35.ame_3_exists
+  -- ^^ `@` required: {d : ℕ} is an implicit binder.
+def seed_KTExtendsK                := @Arxiv.«1308.0994».KTExtendsK
+  -- ^^ `@` required: {Γ} and {φ} are implicit binders.
+def seed_maxWeaklyDivisible_one    := @Erdos56.maxWeaklyDivisible_one
+  -- ^^ `@` required: {k : ℕ} is an implicit binder.
+
+/-- Domain seed names — the 31 FC100 test-lemma wrappers defined in §9. -/
 def domainSeedNames : List Name := [
   `seed_petersen_size,
   `seed_petersen_szeged,
@@ -553,6 +640,19 @@ def domainSeedNames : List Name := [
   `seed_first_three_odd_primes,
   `seed_congruent_7,
   `seed_lcm_lt_example,
+  -- parameterized (data-only binders):
+  `seed_count_false_morphism,
+  `seed_μ_half_eq_uniform,
+  `seed_boundaryCount_univ,
+  `seed_star_smul_mul_smul,
+  `seed_firstCol_normSq,
+  `seed_hasConstantOverlapSq_sing,
+  `seed_hasGap_empty,
+  -- parameterized (Prop-binder assumptions):
+  `seed_ame_2_exists,
+  `seed_ame_3_exists,
+  `seed_KTExtendsK,
+  `seed_maxWeaklyDivisible_one,
 ]
 
 -- ================================================================
@@ -765,8 +865,8 @@ open Elab Command in
   IO.eprintln s!"[§8] Graph now: {g.nodeCount} nodes, {g.edgeCount} edges"
   IO.eprintln ""
   -- Step 3: run AND/OR search for each of the 100
-  --   Uses searchProofMeta (MVarId.apply + DiscrTree) so structural
-  --   matches fire even when ppExpr strings differ by variable names.
+  --   Uses searchProofMeta (isDefEq + linear edge scan) with ∀-binder stripping.
+  --   Structural matches fire even when ppExpr strings differ by variable names.
   let mut proved := 0
   let mut gap := 0
   for name in fc100Decls do
@@ -776,13 +876,16 @@ open Elab Command in
       let mResult ← liftCoreM (MetaM.run (ppExpr ci.type))
       let preview := (mResult.1.pretty.splitOn "\n").headD ""
       match ← searchProofMeta g ci.type with
-      | some steps =>
+      | (some steps, _) =>
         proved := proved + 1
         let labels := steps.map (fun ⟨fn, out⟩ => s!"{fn} → {out}")
         IO.eprintln s!"[PROVED] {name}  ({steps.length} step): {labels}"
-      | none =>
+      | (none, gapInfo) =>
         gap := gap + 1
         IO.eprintln s!"[GAP]    {name}  ⊢  {preview}"
+        if let some gi := gapInfo then
+          let cls := if gi.closedPremises.isEmpty then "∅" else gi.closedPremises.toString
+          IO.eprintln s!"         ↳ tried {gi.edgeName}: closed {cls}, stuck at `{gi.stuckAt}`"
   IO.eprintln ""
   IO.eprintln s!"══ FC100 Summary ══════════════════════════════════"
   IO.eprintln s!"  PROVED : {proved} / 100"
@@ -806,14 +909,26 @@ open Elab Command in
     , ("0 = 1",        mkApp3 (mkConst ``Eq [.succ .zero]) (mkConst ``Nat) (mkNatLit 0) (mkNatLit 1))
     , ("False",        mkConst ``False)
     , ("Nat.Prime 4",  mkApp (mkConst ``Nat.Prime) (mkNatLit 4))
+    -- Parameterized false: exercises the new forallTelescope binder-strip path.
+    -- ∀ n : ℕ, n = Nat.succ n — false for all n (no natural equals its own successor).
+    , ("∀ n, n = n.succ",
+       Expr.forallE `n (mkConst ``Nat)
+         (mkApp3 (mkConst ``Eq [.succ .zero]) (mkConst ``Nat) (mkBVar 0)
+           (mkApp (mkConst ``Nat.succ) (mkBVar 0)))
+         .default)
+    -- Realistic perturbation: negation of a theorem the engine CAN prove.
+    -- If the engine proved this too, it would have proved both P and ¬P — a soundness breach.
+    , ("¬ congruentNumber 7",
+       mkApp (mkConst ``Not)
+         (mkApp (mkConst ``CongruentNumber.congruentNumber) (mkNatLit 7)))
     ]
   IO.eprintln ""
-  IO.eprintln "══ Negative Control (must all be GAP) ════════════"
+  IO.eprintln "══ Negative Control (must all be GAP) ══════════════════"
   let mut allGap := true
   for (label, ty) in negControls do
     match ← searchProofMeta g ty with
-    | none       => IO.eprintln s!"  GAP  (correct) : {label}"
-    | some steps =>
+    | (none, _)       => IO.eprintln s!"  GAP  (correct) : {label}"
+    | (some steps, _) =>
       allGap := false
       let labels := steps.map (fun ⟨fn, out⟩ => s!"{fn} → {out}")
       IO.eprintln s!"  PROVED (UNSOUND): {label}  via {labels}"
