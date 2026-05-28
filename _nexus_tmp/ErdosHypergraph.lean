@@ -250,7 +250,9 @@ private def collectPropArgs (args : Array Expr) : MetaM (Array Expr) :=
 
 open Lean Meta in
 /-- Depth-1 close: find an edge whose conclusion unifies with `goalTy`
-    and has no Prop-kinded premises.  Returns trace on success. -/
+    and has no Prop-kinded premises.  Returns trace on success.
+    Uses `withoutModifyingState` — assignments are rolled back (safe for
+    standalone use; do NOT use inside tryCloseD2's premise loop). -/
 private def tryCloseD1
     (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
     : MetaM (Option (List (String × String))) := do
@@ -268,16 +270,48 @@ private def tryCloseD1
   return none
 
 open Lean Meta in
+/-- Like `tryCloseD1` but COMMITS mvar assignments on success.
+    Use inside `tryCloseD2`'s premise loop so assignments from closing
+    premise N propagate to the type of premise N+1.
+    Failures still restore state (via saveState/restoreState). -/
+private def tryCloseD1Commit
+    (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
+    : MetaM (Option (List (String × String))) := do
+  for edge in allEdges do
+    let some ci := env.find? edge.lemmaName | continue
+    let saved ← saveState
+    -- Try this edge; commit on success, restore on failure.
+    let matched ← try
+      let (args, _, concl) ← forallMetaTelescope ci.type
+      if ← isDefEq goalTy concl then
+        let propArgs ← collectPropArgs args
+        if propArgs.isEmpty then
+          pure true                    -- SUCCESS: leave assignments committed
+        else do
+          restoreState saved           -- has Prop premises → not depth-1 eligible
+          pure false
+      else do
+        restoreState saved             -- conclusion didn't match
+        pure false
+    catch _ => do
+      restoreState saved
+      pure false
+    if matched then return some [(edge.function, edge.output)]
+  return none
+
+open Lean Meta in
 /-- Depth-2 close: first tries depth-1; then tries each edge whose Prop
     premises are ALL closeable at depth-1 by another lemma.
-    Returns trace on success. -/
+    Returns trace on success.
+    Uses tryCloseD1Commit for sub-premises so that mvar assignments from
+    closing premise N constrain the type of premise N+1. -/
 private def tryCloseD2
     (allEdges : Array HgEdge) (env : Environment) (goalTy : Expr)
     : MetaM (Option (List (String × String))) := do
   -- Attempt depth-1 first (fast path).
   if let some steps ← tryCloseD1 allEdges env goalTy then
     return some steps
-  -- Depth-2: edge L closes goal; each Prop premise of L closed by depth-1.
+  -- Depth-2: edge L closes goal; each Prop premise of L closed at depth-1.
   for edge in allEdges do
     let some ci := env.find? edge.lemmaName | continue
     let result ← withoutModifyingState do
@@ -286,14 +320,14 @@ private def tryCloseD2
         unless ← isDefEq goalTy concl do return none
         let propArgs ← collectPropArgs args
         if propArgs.isEmpty then return none  -- already handled above
-        -- Close each Prop premise at depth-1; collect proof steps.
-        -- foldlM short-circuits on first failure (returns none).
+        -- Close each Prop premise using tryCloseD1Commit so assignments
+        -- from premise N propagate to the instantiated type of premise N+1.
         let subStepsOpt ← propArgs.foldlM (fun acc premMVar => do
           match acc with
           | none => return none
           | some stepsAcc =>
             let premTy ← instantiateMVars (← inferType premMVar)
-            match ← tryCloseD1 allEdges env premTy with
+            match ← tryCloseD1Commit allEdges env premTy with
             | none   => return none
             | some s => return some (stepsAcc ++ s)
         ) (some ([] : List (String × String)))
@@ -700,7 +734,8 @@ open Elab Command in
       match ← searchProofMeta g ci.type with
       | some steps =>
         proved := proved + 1
-        IO.eprintln s!"[PROVED] {name}  ({steps.length} step)"
+        let labels := steps.map (fun ⟨fn, out⟩ => s!"{fn} → {out}")
+        IO.eprintln s!"[PROVED] {name}  ({steps.length} step): {labels}"
       | none =>
         gap := gap + 1
         IO.eprintln s!"[GAP]    {name}  ⊢  {preview}"
@@ -712,3 +747,33 @@ open Elab Command in
   -- ── Step 4: persist graph to disk ───────────────────────────
   IO.FS.writeFile "_nexus_tmp/hypergraph.json" g.toJSON
   IO.eprintln s!"[§8] Persisted to _nexus_tmp/hypergraph.json"
+
+-- ================================================================
+-- §9-DIAG  NEGATIVE CONTROL — must return GAP for false goals
+-- ================================================================
+set_option maxHeartbeats 0 in
+open Elab Command in
+#eval show CommandElabM Unit from do
+  let g ← buildHypergraph (seedNames ++ domainSeedNames ++ fc100Decls)
+  let env ← getEnv
+  -- Known-false goals that a sound prover MUST NOT prove:
+  let negControls : List (String × Expr) :=
+    [ ("1 = 2",        mkApp3 (mkConst ``Eq [.succ .zero]) (mkConst ``Nat) (mkNatLit 1) (mkNatLit 2))
+    , ("0 = 1",        mkApp3 (mkConst ``Eq [.succ .zero]) (mkConst ``Nat) (mkNatLit 0) (mkNatLit 1))
+    , ("False",        mkConst ``False)
+    , ("Nat.Prime 4",  mkApp (mkConst ``Nat.Prime) (mkNatLit 4))
+    ]
+  IO.eprintln ""
+  IO.eprintln "══ Negative Control (must all be GAP) ════════════"
+  let mut allGap := true
+  for (label, ty) in negControls do
+    match ← searchProofMeta g ty with
+    | none       => IO.eprintln s!"  GAP  (correct) : {label}"
+    | some steps =>
+      allGap := false
+      let labels := steps.map (fun ⟨fn, out⟩ => s!"{fn} → {out}")
+      IO.eprintln s!"  PROVED (UNSOUND): {label}  via {labels}"
+  if allGap then
+    IO.eprintln "  ✓ All negative controls correctly rejected — engine is sound"
+  else
+    IO.eprintln "  ✗ SOUNDNESS FAILURE — engine proved a false statement"
