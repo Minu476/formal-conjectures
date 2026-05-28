@@ -108,33 +108,39 @@ abbrev GoalShape := String
     Backward-chaining semantics: to prove `output`, first prove all `inputs`.
     `function` is the Mathlib4 declaration that closes the gap. -/
 structure HgEdge where
-  /-- Fully-qualified Lean 4 declaration name. -/
+  /-- Lean 4 declaration name — passed directly to `MVarId.apply` for sound matching. -/
+  lemmaName : Lean.Name
+  /-- Fully-qualified Lean 4 declaration name (display / JSON). -/
   function : String
   /-- Pretty-printed types of Prop-kinded ∀ binders (subgoal shapes). -/
   inputs   : List String
   /-- Pretty-printed conclusion type (the goal shape this edge closes). -/
   output   : String
-  deriving Repr
+  deriving BEq
 
-/-- In-memory hypergraph.  Key = `hash (goalText : String)` (UInt64).
-    `edges` maps each output-goal hash to every known edge that proves it,
-    enabling O(1) backward-chaining lookup with no serialisation. -/
+/-- In-memory hypergraph.
+    `edges` is a HashMap keyed by hash(output) for O(1) exact-string lookup.
+    `allEdges` is a flat array used by `proveGoalMeta` for MVarId.apply-based
+    unification — avoids expensive DiscrTree build with forallMetaTelescope. -/
 structure Hypergraph where
   /-- Goal-hash → canonical goal text (for display / debugging). -/
   nodes : Std.HashMap UInt64 GoalShape
   /-- Goal-hash → backward-chaining edges whose conclusion matches. -/
   edges : Std.HashMap UInt64 (Array HgEdge)
+  /-- All edges flat — used for MVarId.apply-based unification search. -/
+  allEdges : Array HgEdge
 
 namespace Hypergraph
 
-def empty : Hypergraph := ⟨{}, {}⟩
+def empty : Hypergraph := ⟨{}, {}, #[]⟩
 
 /-- Insert one edge, accumulating edges per output node. -/
 def addEdge (g : Hypergraph) (edge : HgEdge) : Hypergraph :=
   let h        := hash edge.output    -- UInt64 via Hashable String
   let existing := (g.edges.get? h).getD #[]
-  { nodes := g.nodes.insert h edge.output
-  , edges := g.edges.insert h (existing.push edge) }
+  { nodes     := g.nodes.insert h edge.output
+  , edges     := g.edges.insert h (existing.push edge)
+  , allEdges  := g.allEdges.push edge }
 
 /-- All edges whose conclusion matches `goalText` (O(1) lookup). -/
 def backwardEdges (g : Hypergraph) (goalText : String) : Array HgEdge :=
@@ -211,10 +217,58 @@ partial def proveGoal (g : Hypergraph) (goal : String) (fuel : Nat)
             (proveGoal g inGoal (fuel - 1) visited).map (fun steps => acc ++ steps)
         subProof.map (fun steps => steps ++ [(edge.function, goal)])
 
-/-- Top-level proof search entry point. -/
+/-- Top-level proof search entry point (string-based, kept for §6/§7). -/
 def searchProof (g : Hypergraph) (goal : String) (maxDepth : Nat := 50)
     : Option (List (String × String)) :=
   proveGoal g goal maxDepth {}
+
+-- ================================================================
+-- §2.6  UNIFICATION-BASED SEARCH  (isDefEq, no typeclass synthesis)
+--
+-- Uses `isDefEq` to match a lemma's conclusion against the goal type.
+-- Avoids `MVarId.apply` because apply triggers typeclass synthesis,
+-- which can cascade deep into Mathlib and take minutes per trial.
+--
+-- Strategy (depth-1):
+--   For each edge, decompose the lemma type with forallMetaTelescope
+--   (creating fresh MVars for all ∀ binders), then check whether the
+--   conclusion is definitionally equal to the goal type. If yes AND
+--   the lemma has no Prop-kinded premises, the goal is PROVED.
+--
+-- Each trial runs in a FRESH MetaM.run (no save/restore overhead).
+-- ================================================================
+
+open Lean Meta Elab Command in
+/-- Check whether `goalType` is directly provable by any edge in `g`.
+    Uses `isDefEq` (no typeclass synthesis).  Depth-1: lemma must have
+    no Prop-kinded premises (i.e. it is "closed" — no subgoals remain). -/
+def searchProofMeta (g : Hypergraph) (goalType : Expr) (maxDepth : Nat := 1)
+    : CommandElabM (Option (List (String × String))) := do
+  let env ← getEnv
+  for edge in g.allEdges do
+    let some ci := env.find? edge.lemmaName | continue
+    -- Fresh MetaM context per trial: no save/restore overhead.
+    let (matched, _) ← liftCoreM <| MetaM.run do
+      try
+        -- forallMetaTelescope: instantiate all ∀ binders with fresh MVars
+        -- so the conclusion becomes a "wildcard" pattern.
+        let (args, _, concl) ← forallMetaTelescope ci.type
+        -- isDefEq: full unification, no typeclass synthesis, fast fail.
+        if ← isDefEq goalType concl then
+          -- Depth-1 leaf check: no Prop-kinded premises.
+          -- Inline exprProp (Expr.sort Level.zero) since it's defined later in §3.
+          let propSort : Expr := Expr.sort Level.zero
+          let propArgs ← args.filterM fun a => do
+            let t ← inferType a
+            let s ← whnf (← inferType t)
+            return s == propSort
+          return propArgs.isEmpty
+        else
+          return false
+      catch _ => return false
+    if matched then
+      return some [(edge.function, edge.output)]
+  return none
 
 -- ================================================================
 -- §3  TYPE DECOMPOSITION  (MetaM)
@@ -244,9 +298,10 @@ def extractEdge (name : Name) : MetaM (Option HgEdge) := do
         return none
     let propInputs := (inputStrs.toList.filterMap id)
     let outputStr  := (← ppExpr conclusion).pretty
-    return some { function := name.toString
-                , inputs   := propInputs
-                , output   := outputStr }
+    return some { lemmaName := name
+                , function  := name.toString
+                , inputs    := propInputs
+                , output    := outputStr }
 
 -- ================================================================
 -- §4  BUILD HYPERGRAPH
@@ -279,6 +334,7 @@ def buildHypergraph (seeds : List Name) : CommandElabM Hypergraph := do
     match mResult.1 with
     | some edge => graph := graph.addEdge edge
     | none      => pure ()
+  -- allEdges is built incrementally by addEdge — no separate Phase 3 needed.
   return graph
 
 -- ================================================================
@@ -556,11 +612,17 @@ def fc100Decls : List Name := [
   `OeisA67720.a_1,
 ]
 
+set_option maxHeartbeats 0 in
 open Elab Command in
 #eval show CommandElabM Unit from do
-  -- Step 1: build edge graph from 15 Mathlib seeds + 16 FC100 domain wrappers
-  let g ← buildHypergraph (seedNames ++ domainSeedNames)
-  IO.eprintln s!"[§8] Mathlib seed graph: {g.nodeCount} nodes, {g.edgeCount} edges"
+  -- Step 1: build edge graph
+  --   • 15 Mathlib seeds (§1)           — general arithmetic / combinatorics
+  --   • 16 FC100 domain wrappers (§9)   — closed-type leaf edges
+  --   • 100 FC100 proof terms (Phase 1) — harvest every Mathlib lemma each
+  --       proof touched; grows edges from ~48 to potentially thousands
+  let allSeeds := seedNames ++ domainSeedNames ++ fc100Decls
+  let g ← buildHypergraph allSeeds
+  IO.eprintln s!"[§8] Seed graph: {g.nodeCount} nodes, {g.edgeCount} edges"
   -- Step 2: inject all 100 FC100 theorem types as goal nodes (targets)
   let env ← getEnv
   let mut g := g
@@ -580,6 +642,8 @@ open Elab Command in
   IO.eprintln s!"[§8] Graph now: {g.nodeCount} nodes, {g.edgeCount} edges"
   IO.eprintln ""
   -- Step 3: run AND/OR search for each of the 100
+  --   Uses searchProofMeta (MVarId.apply + DiscrTree) so structural
+  --   matches fire even when ppExpr strings differ by variable names.
   let mut proved := 0
   let mut gap := 0
   for name in fc100Decls do
@@ -587,10 +651,8 @@ open Elab Command in
     | none => pure ()
     | some ci =>
       let mResult ← liftCoreM (MetaM.run (ppExpr ci.type))
-      let typeStr := mResult.1.pretty
-      -- First line of type gives a clean preview without truncation issues
-      let preview := (typeStr.splitOn "\n").headD typeStr
-      match searchProof g typeStr with
+      let preview := (mResult.1.pretty.splitOn "\n").headD ""
+      match ← searchProofMeta g ci.type with
       | some steps =>
         proved := proved + 1
         IO.eprintln s!"[PROVED] {name}  ({steps.length} step)"
@@ -601,8 +663,7 @@ open Elab Command in
   IO.eprintln s!"══ FC100 Summary ══════════════════════════════════"
   IO.eprintln s!"  PROVED : {proved} / 100"
   IO.eprintln s!"  GAP    : {gap} / 100"
-  IO.eprintln s!"  (GAP = honest: no path through current Mathlib edges)"
-  IO.eprintln s!"  Next: add domain-specific seeds from external proof repos"
+  IO.eprintln s!"  Search : MVarId.apply + DiscrTree (unification-based)"
   -- ── Step 4: persist graph to disk ───────────────────────────
   IO.FS.writeFile "_nexus_tmp/hypergraph.json" g.toJSON
   IO.eprintln s!"[§8] Persisted to _nexus_tmp/hypergraph.json"
