@@ -230,13 +230,43 @@ def searchProof (g : Hypergraph) (goal : String) (maxDepth : Nat := 50)
 -- which cascades through Mathlib and takes minutes per trial.
 --
 -- Architecture (two non-recursive MetaM functions):
---   tryCloseD1 — depth-1: lemma conclusion ≅ goal AND no Prop premises
---   tryCloseD2 — depth-2: lemma conclusion ≅ goal AND every Prop premise
---                is closeable at depth-1 by another lemma
+--   tryCloseD1       — depth-1: lemma conclusion ≅ goal AND no Prop premises
+--   tryCloseD1Commit — like D1 but COMMITS mvar assignments on success
+--   tryCloseD2       — depth-2: lemma conclusion ≅ goal AND every Prop premise
+--                      is closeable at depth-1 by another lemma
 --
--- State hygiene: one fresh MetaM.run per goal; withoutModifyingState
--- isolates every edge trial so failed unifications don't pollute the
--- MVar environment for the next candidate.
+-- ── Critical MetaM state-management note ──────────────────────────────────
+-- `withoutModifyingState x` is OBSERVATIONAL: it runs `x`, then restores
+-- state regardless of whether `x` succeeded or failed.  Its semantics are
+-- literally `let s ← get; let r ← x; set s; pure r`.  It tells you *if*
+-- something would succeed, then unwinds — like a read-only speculative check.
+--
+-- For backward chaining this is wrong at depth-2:  when `tryCloseD1` closes
+-- premise N via `withoutModifyingState`, the mvar assignments produced by
+-- `isDefEq` (e.g. `mv_a := ¬¬goalTy`) are silently rolled back before the
+-- function returns.  Premise N+1's type then still depends on the free mvar
+-- `mv_a`.  `isDefEq free_mvar anything` trivially succeeds by assignment, so
+-- any depth-1 edge closes any remaining premise — making every Prop goal
+-- appear "proved" via the same suspicious chain:
+--     [Classical.not_not, Matrix.range_cons, Iff.mp]
+-- (Iff.mp conclusion `b` is a free Prop mvar; not_not closes the Iff
+-- premise; the second premise is the now-free `mv_a`, closed by the first
+-- depth-1 edge tried regardless of goal.)
+--
+-- The diagnostic signature is unmistakable: every goal — including obviously
+-- false ones like `1 = 2` or `False` — routes through the identical chain.
+-- Confirmed live on 2026-05-28; commit 0bb6718 produced this phantom 100/100.
+--
+-- Fix: `tryCloseD1Commit` uses `saveState`/`restoreState`-on-failure instead
+-- of `withoutModifyingState`.  Successful assignments persist within the
+-- enclosing `withoutModifyingState` block in `tryCloseD2`, so each premise's
+-- close genuinely constrains the next.  This is the same pattern used by
+-- Mathlib's `apply` and `aesop` internals for exactly this reason.
+--
+-- Soundness guard: the negative-control `#eval` at end-of-file must pass
+-- (all of `1=2`, `0=1`, `False`, `Nat.Prime 4` → GAP) before any PROVED
+-- count is trusted.  Run it after every change to this section.
+-- ──────────────────────────────────────────────────────────────────────────
 -- ================================================================
 
 open Lean Meta in
