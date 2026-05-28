@@ -936,3 +936,43 @@ open Elab Command in
     IO.eprintln "  ✓ All negative controls correctly rejected — engine is sound"
   else
     IO.eprintln "  ✗ SOUNDNESS FAILURE — engine proved a false statement"
+
+-- ================================================================
+-- §10  LEAVE-ONE-OUT CONTROL
+--
+-- Measures genuine composition: build the seed graph using ONLY the
+-- 15 generic Mathlib seeds (seedNames).  No domain wrapper seeds,
+-- no fc100Decls proof-term harvest.  Any FC100 goal that still PROVES
+-- here is provable purely from reusable Mathlib lemmas — the only
+-- class that could ever fire on a genuinely unsolved open problem.
+--
+-- Expected survivors: tripleProduct_const (le_refl×2 + LE.le.antisymm),
+-- PellNumbers.pellNumber_two (Nat.mul_comm), and possibly a handful
+-- of others whose types match generic arithmetic shapes.
+-- ================================================================
+set_option maxHeartbeats 0 in
+open Elab Command in
+#eval show CommandElabM Unit from do
+  -- Generic Mathlib seeds only — NO domain wrappers, NO fc100Decls harvest.
+  let g ← buildHypergraph seedNames
+  let env ← getEnv
+  IO.eprintln "══ §10 Leave-One-Out: generic seeds only ════════════════"
+  IO.eprintln s!"[LOO] Seed graph (generic only): {g.nodeCount} nodes, {g.edgeCount} edges"
+  IO.eprintln ""
+  let mut survived := 0
+  let mut selfHarvest := 0
+  for name in fc100Decls do
+    match env.find? name with
+    | none => pure ()
+    | some ci =>
+      match ← searchProofMeta g ci.type with
+      | (some steps, _) =>
+        survived := survived + 1
+        let labels := steps.map (fun ⟨fn, out⟩ => s!"{fn} → {out}")
+        IO.eprintln s!"  [SURVIVES] {name}  ({steps.length} step): {labels}"
+      | (none, _) => pure ()  -- silent: most will GAP, only report survivors
+  IO.eprintln ""
+  IO.eprintln s!"══ §10 Summary ══════════════════════════════════════════"
+  IO.eprintln s!"  GENUINE (generic-seed-only proofs) : {survived} / 100"
+  IO.eprintln s!"  SELF-HARVEST (need own proof harvest): {100 - survived} / 100"
+  IO.eprintln "  → Only the GENUINE count predicts reach on unsolved problems."
