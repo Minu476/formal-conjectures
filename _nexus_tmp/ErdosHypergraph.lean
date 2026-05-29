@@ -160,9 +160,22 @@ def addGoalNode (g : Hypergraph) (goalText : String) : Hypergraph :=
 end Hypergraph
 
 -- ================================================================
--- §1.5  JSON SERIALISATION
---   Writes the in-memory hypergraph to disk so it persists between runs.
---   Called at the end of §8.  No external dependency — pure String ops.
+-- §1.5  SERIALISATION & WARM-START CACHE
+--   toJSON   — full graph as one JSON object (debugging / Neo4j Bloom)
+--   toJSONL  — one edge per JSON line; consumed by C# HyperedgeIngestor → Neo4j
+--   toHGE    — tab-separated warm-start cache (Lean reads this, not JSONL)
+--   fromHGE  — rebuild Hypergraph from .hge file; skips proof-term walking
+--
+--   Pipeline:
+--     cold run : buildHypergraph → toHGE   → hg_cache.hge   (Lean warm-start)
+--                               → toJSONL → hg_cache.jsonl  (C# → Neo4j)
+--     warm run : fromHGE "hg_cache.hge" → Hypergraph  (~0.2s vs ~25s cold)
+--     C# agent : GetAllHyperedgesAsync(Neo4j) → Cypher cross-problem reasoning
+--
+--   HGE format (tab-separated, 3 fields per line):
+--     LEMMA_NAME \t INPUTS_PIPE_JOINED \t OUTPUT
+--   where INPUTS_PIPE_JOINED is empty if no inputs, otherwise "inp1|inp2|..."
+--   Choice of separator: \t and | never appear in Lean name/type pretty-prints.
 -- ================================================================
 
 private def jsonStr (s : String) : String :=
@@ -177,8 +190,7 @@ private def jsonObj (kvs : List (String × String)) : String :=
 
 namespace Hypergraph
 
-/-- Serialise the hypergraph to a compact JSON string.
-    Write to disk with `IO.FS.writeFile path (g.toJSON)`. -/
+/-- Full graph as one JSON object (for debugging / Neo4j Bloom visualization). -/
 def toJSON (g : Hypergraph) : String :=
   let nodeItems := g.nodes.toList.map fun (h, text) =>
     jsonObj [("hash", s!"{h}"), ("text", jsonStr text)]
@@ -188,6 +200,46 @@ def toJSON (g : Hypergraph) : String :=
                ("inputs", jsonArr (e.inputs.map jsonStr)),
                ("output", jsonStr e.output)]) []
   jsonObj [("nodes", jsonArr nodeItems), ("edges", jsonArr edgeItems)]
+
+/-- One JSON line per edge — consumed by the C# HyperedgeIngestor which pushes
+    to Neo4j.  Format: {"fn":"Nat.add_comm","inputs":[],"output":"n + m = m + n"} -/
+def toJSONL (g : Hypergraph) : String :=
+  String.join (g.allEdges.toList.map fun e =>
+    jsonObj [("fn",     jsonStr e.function),
+             ("inputs", jsonArr (e.inputs.map jsonStr)),
+             ("output", jsonStr e.output)] ++ "\n")
+
+/-- Tab-separated warm-start cache consumed by `fromHGE`.
+    Format per line:  lemmaName \t pipe-joined-inputs \t output
+    Three fields guaranteed; \t and | are safe separators (not in Lean names/types). -/
+def toHGE (g : Hypergraph) : String :=
+  String.join (g.allEdges.toList.map fun e =>
+    e.function ++ "\t" ++ String.intercalate "|" e.inputs ++ "\t" ++ e.output ++ "\n")
+
+/-- Rebuild `Hypergraph` from a `.hge` warm-start cache file.
+    Returns `none` if the file is absent or contains no parseable edges.
+    Uses try/catch for existence check (no `IO.FS.pathExists` in Lean 4.27). -/
+def fromHGE (path : String) : IO (Option Hypergraph) := do
+  let content ← try IO.FS.readFile path catch _ => return none
+  if content.isEmpty then return none
+  let lines := content.splitOn "\n" |>.filter (fun l => !l.trim.isEmpty)
+  if lines.isEmpty then return none
+  let mut g := Hypergraph.empty
+  let mut parsed := 0
+  for line in lines do
+    -- Each line: lemmaName \t pipe-joined-inputs \t output
+    match line.splitOn "\t" with
+    | [fn, inpsRaw, output] =>
+      if fn.isEmpty || output.isEmpty then continue
+      let inputs := if inpsRaw.isEmpty then [] else inpsRaw.splitOn "|"
+      g := g.addEdge { lemmaName := fn.toName
+                     , function  := fn
+                     , inputs    := inputs
+                     , output    := output }
+      parsed := parsed + 1
+    | _ => continue   -- malformed line — skip silently
+  if parsed == 0 then return none
+  return some g
 
 end Hypergraph
 
@@ -838,13 +890,28 @@ def fc100Decls : List Name := [
 set_option maxHeartbeats 0 in
 open Elab Command in
 #eval show CommandElabM Unit from do
-  -- Step 1: build edge graph
-  --   • 15 Mathlib seeds (§1)           — general arithmetic / combinatorics
-  --   • 16 FC100 domain wrappers (§9)   — closed-type leaf edges
-  --   • 100 FC100 proof terms (Phase 1) — harvest every Mathlib lemma each
-  --       proof touched; grows edges from ~48 to potentially thousands
+  -- ── Step 1: build edge graph (warm-start if HGE cache exists) ───────────
+  --   Cold path: proof-term walk + MetaM extractEdge (~25s).
+  --   Warm path: fromHGE reads hg_cache.hge (tab-separated, ~0.2s).
+  --   Invalidate cache: rm _nexus_tmp/hg_cache.hge  (e.g. after adding seeds).
+  --   C# consumption: hg_cache.jsonl  (JSONL, written on cold path alongside .hge).
+  let hgeFile  := "_nexus_tmp/hg_cache.hge"
+  let jsonlFile := "_nexus_tmp/hg_cache.jsonl"
   let allSeeds := seedNames ++ domainSeedNames ++ fc100Decls
-  let g ← buildHypergraph allSeeds
+  let g ← do
+    if let some cached ← Hypergraph.fromHGE hgeFile then
+      IO.eprintln s!"[§8] Warm-start: loaded {cached.edgeCount} edges from {hgeFile}"
+      pure cached
+    else
+      IO.eprintln s!"[§8] Cold build: running buildHypergraph (no cache at {hgeFile})..."
+      let built ← buildHypergraph allSeeds
+      -- Write .hge for Lean warm-start on next run
+      IO.FS.writeFile hgeFile built.toHGE
+      IO.eprintln s!"[§8] Wrote {built.edgeCount} edges to {hgeFile}"
+      -- Write .jsonl for C# HyperedgeIngestor → Neo4j
+      IO.FS.writeFile jsonlFile built.toJSONL
+      IO.eprintln s!"[§8] Wrote {built.edgeCount} edges to {jsonlFile} (push to Neo4j with HyperedgeIngestor)"
+      pure built
   IO.eprintln s!"[§8] Seed graph: {g.nodeCount} nodes, {g.edgeCount} edges"
   -- Step 2: inject all 100 FC100 theorem types as goal nodes (targets)
   let env ← getEnv
@@ -892,8 +959,10 @@ open Elab Command in
   IO.eprintln s!"  GAP    : {gap} / 100"
   IO.eprintln s!"  Search : isDefEq unification, depth≤2 (no typeclass synthesis)"
   -- ── Step 4: persist graph to disk ───────────────────────────
+  -- .hge and .jsonl already written in Step 1 (cold path only; warm path skips).
+  -- Full JSON written for debugging / Neo4j Bloom visualization.
   IO.FS.writeFile "_nexus_tmp/hypergraph.json" g.toJSON
-  IO.eprintln s!"[§8] Persisted to _nexus_tmp/hypergraph.json"
+  IO.eprintln s!"[§8] Full graph persisted to _nexus_tmp/hypergraph.json"
 
 -- ================================================================
 -- §9-DIAG  NEGATIVE CONTROL — must return GAP for false goals
@@ -901,7 +970,15 @@ open Elab Command in
 set_option maxHeartbeats 0 in
 open Elab Command in
 #eval show CommandElabM Unit from do
-  let g ← buildHypergraph (seedNames ++ domainSeedNames ++ fc100Decls)
+  -- Warm-start: reuse the cache written by §8 (avoids a second 25s cold build)
+  let hgeFile := "_nexus_tmp/hg_cache.hge"
+  let g ← do
+    if let some cached ← Hypergraph.fromHGE hgeFile then
+      IO.eprintln s!"[§9-DIAG] Warm-start: {cached.edgeCount} edges from {hgeFile}"
+      pure cached
+    else
+      IO.eprintln "[§9-DIAG] No cache — cold build..."
+      buildHypergraph (seedNames ++ domainSeedNames ++ fc100Decls)
   let env ← getEnv
   -- Known-false goals that a sound prover MUST NOT prove:
   let negControls : List (String × Expr) :=
