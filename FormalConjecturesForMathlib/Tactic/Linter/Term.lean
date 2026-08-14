@@ -18,6 +18,7 @@ module
 
 public import Lean.Meta.Basic
 public import Lean.Elab.Command
+public import Lean.Linter.Basic
 public import FormalConjecturesForMathlib.Lean.Elab.InfoTree.Util
 public import Lean.Server.InfoUtils
 
@@ -70,7 +71,7 @@ This doesn't return a `Linter`, as then the caller would have to remember to pas
 -/
 def runTermLinter {σ} [Inhabited σ] (opt : Lean.Option Bool)
     (lint : Term → Expr → StateT σ MetaM Unit) : Command.CommandElab :=
-  withSetOptionIn fun cmdStx => do
+  Lean.withSetOptionIn fun cmdStx => do
     let infoTrees := (← get).infoState.trees.toArray
     if (← MonadState.get).messages.hasErrors then return
     let some cmdStxRange := cmdStx.getRange? | return
