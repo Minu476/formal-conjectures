@@ -18,6 +18,7 @@ module
 public import Mathlib.Algebra.Order.Ring.Nat
 public import Mathlib.Algebra.Order.Star.Basic
 public import Mathlib.Data.Nat.PrimeFin
+public meta import Mathlib.Data.Nat.PrimeFin
 
 @[expose] public section
 
@@ -86,7 +87,8 @@ open Lean Meta Qq in
 /-- Simproc to compute the set `Nat.primeFactors`. -/
 dsimproc primeFactorsEq (Nat.primeFactors _) := fun e ↦ do
   unless e.isAppOfArity `Nat.primeFactors 1 do return .continue
-  let some n ← fromExpr? e.appArg! | return .continue
+  -- Port note (v4.33): `fromExpr?` → `Expr.nat?`; `primeFactors` is a Finset now.
+  let some n := e.appArg!.nat? | return .continue
   let outAsList : List Q(ℕ) := (unsafe n.primeFactors.val.unquot).map mkNatLit
   let outAsFinset : Q(Finset ℕ) := outAsList.foldl (fun s n ↦ q(insert $n $s)) q({})
   return .done outAsFinset
