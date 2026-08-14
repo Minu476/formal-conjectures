@@ -126,7 +126,7 @@ theorem tendsto_atTop_growthFunction_of_infinite [Infinite G] {S : Set G} (hS : 
   delta GrowthFunction
   have (n : ℕ) : Fintype (CayleyBall S n) := (cayleyBall_finite hS n).fintype
   apply ((Finset.tendsto_card_atTop).comp (f := fun n ↦ (CayleyBall S n).toFinset) ?_).congr
-    (by simp [Set.ncard_eq_toFinset_card'])
+    (by simp [Set.ncard_eq_toFinset_card])
   apply tendsto_atTop_atTop_of_monotone fun _ _ ↦ by simpa using cayleyBall_monotone S
   intro A
   obtain rfl | hA := A.eq_empty_or_nonempty
