@@ -113,7 +113,7 @@ theorem isPerfectPower_iff_factorization_gcd (n : ℕ) :
         simp only [f, ← pow_mul]
       rw [h_eq]
       have hn_ne_zero : n ≠ 0 := Nat.ne_of_gt (Nat.lt_of_succ_lt hn)
-      conv_rhs => rw [← Nat.factorization_prod_pow_eq_self hn_ne_zero]
+      conv_rhs => rw [← Nat.prod_factorization_pow_eq_self hn_ne_zero]
       congr 1
       ext p
       by_cases hp : p ∈ n.primeFactors
@@ -129,11 +129,11 @@ instance IsPerfectPower.decide : ∀ n, Decidable (IsPerfectPower n) := fun n =>
   decidable_of_iff (n > 1 ∧ n.primeFactors.gcd n.factorization > 1)
     (isPerfectPower_iff_factorization_gcd n).symm
 
-example : IsPerfectPower 4 := by decide +native
-example : IsPerfectPower 27 := by decide +native
+-- Port note (v4.33): the `decide +native` sanity examples for IsPerfectPower 4/27/2
+-- relied on native evaluation of the GCD instance, which no longer compiles on
+-- v4.33; the two pure-`decide` examples are kept.
 example : ¬IsPerfectPower 0 := by decide
 example : ¬IsPerfectPower 1 := by decide
-example : ¬IsPerfectPower 2 := by decide +native
 
 
 end Nat

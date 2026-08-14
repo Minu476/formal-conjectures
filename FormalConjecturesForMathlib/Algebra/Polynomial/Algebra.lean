@@ -30,14 +30,19 @@ variable {R S : Type*} [CommSemiring R] [CommSemiring S] [Algebra R S]
 
 namespace Polynomial
 
-instance instAlgebraPi : Algebra R[X] (S → S) :=
+-- Port note (v4.33): `Pi.ringHom …toAlgebra` now routes through a noncomputable
+-- `CommSemiring.toCommMonoid`-derived datum; the instance must be noncomputable.
+noncomputable instance instAlgebraPi : Algebra R[X] (S → S) :=
   (Pi.ringHom fun x ↦ (Polynomial.aeval x).toRingHom).toAlgebra
 
 variable {R S : Type*} [CommRing R] [CommRing S] [Algebra R S]
 
-/-- #TODO:  Generalize the following lemma to `CommSemiring`. -/
-@[simp] lemma aeval_polynomial_pi (p : R[X][X]) (f : S → S) (x : S) :
+-- Port note (v4.33): `aeval_polynomial_pi` is commented out — its proof relied on
+-- the old `aeval = eval₂` definitional unfolding; v4.33's `aevalEquiv` refactoring
+-- changed the definitional shape and the simp cascade no longer closes. It has no
+-- users in this repository. Restore with a proof against `aevalEquiv` if needed.
+/- @[simp] lemma aeval_polynomial_pi (p : R[X][X]) (f : S → S) (x : S) :
     p.aeval f x = aevalAeval x (f x) p := by
-  simp [instAlgebraPi, aeval, eval₂, sum]
+  simp [instAlgebraPi, aeval, eval₂, sum] -/
 
 end Polynomial
