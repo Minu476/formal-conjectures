@@ -42,7 +42,6 @@ register_option linter.style.conditional_formal_proof : Bool := {
 }
 
 -- FIXME: False positive
-set_option linter.style.docString.empty false
 
 namespace FormalProofLinter
 

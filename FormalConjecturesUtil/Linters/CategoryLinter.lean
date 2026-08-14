@@ -37,7 +37,6 @@ register_option linter.style.category_attribute : Bool := {
 }
 
 -- FIXME: False positive
-set_option linter.style.docString.empty false
 
 namespace CategoryLinter
 

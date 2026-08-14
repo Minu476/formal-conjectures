@@ -40,7 +40,7 @@ private lemma double_sum_eq_two_mul_sym2_sum {f : α → α → ℕ}
     2 * ∑ x : Sym2 α, Sym2.lift ⟨f, fun a b => hf a b⟩ x := by
   -- Use fiberwise decomposition over Sym2 quotient map
   have h_fiber := Fintype.sum_fiberwise
-    (fun (p : α × α) => Sym2.mk p)
+    (fun (p : α × α) => Sym2.mk p.1 p.2)
     (fun (p : α × α) => f p.1 p.2)
   -- h_fiber : ∑ q : Sym2 α, ∑ p : {p // Sym2.mk p = q}, f (↑p).1 (↑p).2
   --         = ∑ p : α × α, f p.1 p.2
@@ -50,35 +50,37 @@ private lemma double_sum_eq_two_mul_sym2_sum {f : α → α → ℕ}
   rw [show (∑ u : α, ∑ v : α, f u v) = ∑ p : α × α, f p.1 p.2 from by
     rw [← Finset.univ_product_univ, Finset.sum_product']]
   rw [← h_fiber, Finset.mul_sum]
-  apply Finset.sum_congr rfl
-  intro q _
   -- For each q : Sym2 α, show fiber sum = 2 * lift f q
-  refine Sym2.ind (fun a b => ?_) q
-  simp only [Sym2.lift_mk]
-  -- Need: ∑ (p : {p : α × α // Sym2.mk p = s(a, b)}), f (↑p).1 (↑p).2 = 2 * f a b
-  -- Convert subtype sum to filter sum
-  rw [← Finset.sum_subtype (Finset.univ.filter (fun p : α × α => Sym2.mk p = s(a, b)))
-    (fun x => by simp [Finset.mem_filter]) (fun p => f p.1 p.2)]
-  -- Characterize the filter: Sym2.mk (x,y) = s(a,b) ↔ (x,y) = (a,b) ∨ (x,y) = (b,a)
-  have h_filter : Finset.univ.filter (fun p : α × α => Sym2.mk p = s(a, b)) =
-      {(a, b), (b, a)} := by
-    ext ⟨x, y⟩
-    simp only [Finset.mem_filter, Finset.mem_univ, true_and, Finset.mem_insert,
-      Finset.mem_singleton, Prod.mk.injEq]
-    constructor
-    · intro h
-      rw [Sym2.eq] at h
-      cases h with
-      | refl => left; exact ⟨rfl, rfl⟩
-      | swap => right; exact ⟨rfl, rfl⟩
-    · rintro (⟨rfl, rfl⟩ | ⟨rfl, rfl⟩)
-      · rfl
-      · exact Sym2.sound (.swap _ _)
-  rw [h_filter]
-  by_cases hab : a = b
-  · subst hab; simp [hd]
-  · rw [Finset.sum_pair (show (a, b) ≠ (b, a) by simp [hab])]
-    rw [hf b a]; ring
+  -- (v4.33 port: prove the per-fiber fact as a standalone `have` — `apply
+  -- Finset.sum_congr` no longer unifies this goal shape.)
+  have hfiber : ∀ q : Sym2 α,
+      (∑ i : {p : α × α // Sym2.mk p.1 p.2 = q}, f i.1.1 i.1.2)
+        = 2 * Sym2.lift ⟨f, fun a b => hf a b⟩ q := by
+    intro q
+    refine Sym2.inductionOn q (fun a b => ?_)
+    simp only [Sym2.lift_mk]
+    rw [← Finset.sum_subtype (Finset.univ.filter (fun p : α × α => Sym2.mk p.1 p.2 = s(a, b)))
+      (fun x => by simp [Finset.mem_filter]) (fun p => f p.1 p.2)]
+    have h_filter : Finset.univ.filter (fun p : α × α => Sym2.mk p.1 p.2 = s(a, b)) =
+        {(a, b), (b, a)} := by
+      ext ⟨x, y⟩
+      simp only [Finset.mem_filter, Finset.mem_univ, true_and, Finset.mem_insert,
+        Finset.mem_singleton, Prod.mk.injEq]
+      constructor
+      · intro h
+        rw [Sym2.eq] at h
+        cases h with
+        | refl => left; exact ⟨rfl, rfl⟩
+        | swap => right; exact ⟨rfl, rfl⟩
+      · rintro (⟨rfl, rfl⟩ | ⟨rfl, rfl⟩)
+        · rfl
+        · exact Sym2.sound (.swap _ _)
+    rw [h_filter]
+    by_cases hab : a = b
+    · subst hab; simp [hd]
+    · rw [Finset.sum_pair (show (a, b) ≠ (b, a) by simp [hab])]
+      rw [hf b a]; ring
+  exact Finset.sum_congr rfl (fun q _ => hfiber q)
 
 
 theorem wiener_eq_computable (G : SimpleGraph α) [DecidableRel G.Adj] :

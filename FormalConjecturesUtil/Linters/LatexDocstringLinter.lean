@@ -16,6 +16,7 @@ limitations under the License.
 module
 
 public import Lean
+public meta import Lean.Linter.Basic
 public meta import Init.Data.String.Legacy
 
 /-! # The LaTeX Docstring Linter

@@ -32,20 +32,28 @@ We might eventually want to replace these with his more general versions.
 see: https://leanprover.zulipchat.com/#narrow/channel/116395-maths/topic/Formalise.20the.20proposition.20P.20.E2.89.A0NP/with/453031558
 -/
 
-def finEncodingListBool : Computability.FinEncoding (List Bool) where
-  Γ := Bool
+def finEncodingListBool : Computability.Encoding (List Bool) Bool where
   encode := id
   decode := Option.some
   decode_encode _ := rfl
-  ΓFin := Bool.fintype
+
+/-- Port note (v4.33): `List.splitOnP` moved to Lean core with new unfolding lemmas;
+both simp lemmas below are rebuilt on a single-chunk helper. -/
+private lemma splitOnP_eq_single {α : Type} (P : α → Bool) (l : List α)
+    (h : ∀ x ∈ l, P x = false) : List.splitOnP P l = [l] := by
+  induction l with
+  | nil => simp
+  | cons hd tl ih =>
+    rw [List.splitOnP_cons_eq_if_splitOnPPrepend,
+      if_neg (by simp [h hd (by simp)]),
+      List.splitOnPPrepend_eq_modifyHead,
+      ih (fun x hx => h x (by simp [hx]))]
+    simp
 
 @[simp]
 lemma splitOnP_isNone_map_some {α : Type} (l : List α) :
-    List.splitOnP Option.isNone (l.map some) = [l.map some] := by
-  induction l with
-  | nil => rfl
-  | cons hd tl ih =>
-    simp [ih]
+    List.splitOnP Option.isNone (l.map some) = [l.map some] :=
+  splitOnP_eq_single _ _ (by simp)
 
 @[simp]
 lemma splitOnP_append_cons {α : Type} (l1 l2 : List α)
@@ -53,13 +61,22 @@ lemma splitOnP_append_cons {α : Type} (l1 l2 : List α)
     List.splitOnP P (l1 ++ a :: l2)
     = List.splitOnP P l1 ++ List.splitOnP P l2 := by
   induction l1 with
-  | nil => simp [hPa]
+  | nil =>
+    rw [List.nil_append, List.splitOnP_cons_eq_if_splitOnPPrepend, if_pos hPa]
+    simp
   | cons hd tl ih =>
-    obtain ⟨hd1, tl1, h1'⟩ := List.exists_cons_of_ne_nil (List.splitOnP_ne_nil P tl)
-    by_cases hPh : P hd <;> simp [*]
+    rw [List.cons_append, List.splitOnP_cons_eq_if_splitOnPPrepend]
+    by_cases hPh : P hd = true
+    · rw [List.splitOnP_cons_eq_if_splitOnPPrepend, if_pos hPh, ih, if_pos hPh]
+      simp
+    · rw [if_neg hPh, List.splitOnPPrepend_eq_modifyHead,
+        List.splitOnP_cons_eq_if_splitOnPPrepend, if_neg hPh,
+        List.splitOnPPrepend_eq_modifyHead, ih]
+      obtain ⟨hd1, tl1, h1'⟩ := List.exists_cons_of_ne_nil (List.splitOnP_ne_nil P tl)
+      rw [h1']
+      simp
 
-def finEncodingListBoolProdListBool : Computability.FinEncoding (List Bool × List Bool) where
-  Γ := Option Bool
+def finEncodingListBoolProdListBool : Computability.Encoding (List Bool × List Bool) (Option Bool) where
   encode := fun ⟨l1, l2⟩ ↦ (l1.map some) ++ [none] ++ (l2.map some)
   decode := fun l ↦
     match l.splitOnP Option.isNone with
@@ -68,6 +85,5 @@ def finEncodingListBoolProdListBool : Computability.FinEncoding (List Bool × Li
   decode_encode := by
     intro (l1, l2)
     simp
-  ΓFin := instFintypeOption
 
 end Encodings
