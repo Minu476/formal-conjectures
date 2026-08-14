@@ -31,18 +31,19 @@ A graph where the vertices V are a collection of points in ℝ² and there is
 an edge between two points if and only if the distance between them is 1. -/
 def UnitDistancePlaneGraph (V : Set (EuclideanSpace ℝ (Fin 2))) : SimpleGraph V where
   Adj x y := Dist.dist x y = 1
-  symm x y := by simp [PseudoMetricSpace.dist_comm]
+  symm := ⟨fun x y ↦ by simp [dist_comm x y]⟩
+  loopless := ⟨fun x ↦ by simp⟩
 
 /-- An integer distance graph in ℝ²:
 the same construction with `1` replaced by an arbitrary positive integer, so two distinct
 points are adjacent exactly when the distance between them is a positive whole number. -/
 def IntegerDistancePlaneGraph (V : Set (EuclideanSpace ℝ (Fin 2))) : SimpleGraph V where
   Adj x y := ∃ n : ℕ, 0 < n ∧ Dist.dist x y = n
-  symm x y := by simp [PseudoMetricSpace.dist_comm]
-  loopless x := by
+  symm := ⟨fun x y ⟨n, hn, h⟩ => ⟨n, hn, by rwa [dist_comm]⟩⟩
+  loopless := ⟨fun x ↦ by
     rintro ⟨n, hn, h⟩
     rw [dist_self, eq_comm, Nat.cast_eq_zero] at h
-    omega
+    omega⟩
 
 
 

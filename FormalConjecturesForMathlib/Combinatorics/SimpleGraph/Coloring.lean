@@ -29,12 +29,9 @@ namespace SimpleGraph
 
 @[inherit_doc] scoped notation "χ(" G ")" => chromaticNumber G
 
-lemma le_chromaticNumber_iff_colorable : n ≤ G.chromaticNumber ↔ ∀ m, G.Colorable m → n ≤ m := by
-  simp [chromaticNumber]
-
-lemma le_chromaticNumber_iff_coloring :
-    n ≤ G.chromaticNumber ↔ ∀ m, G.Coloring (Fin m) → n ≤ m := by
-  simp [le_chromaticNumber_iff_colorable, Colorable]
+-- Port note (v4.33): le_chromaticNumber_iff_colorable, le_chromaticNumber_iff_coloring,
+-- Coloring.injective_comp_of_pairwise_adj, Colorable.card_le_of_pairwise_adj, and
+-- le_chromaticNumber_of_pairwise_adj were upstreamed to Mathlib and are removed here.
 
 lemma lt_chromaticNumber_iff_not_colorable : n < G.chromaticNumber ↔ ¬ G.Colorable n := by
   rw [← chromaticNumber_le_iff_colorable, not_le]
@@ -42,19 +39,6 @@ lemma lt_chromaticNumber_iff_not_colorable : n < G.chromaticNumber ↔ ¬ G.Colo
 lemma le_chromaticNumber_iff_not_colorable (hn : n ≠ 0) :
     n ≤ G.chromaticNumber ↔ ¬ G.Colorable (n - 1) := by
   let n + 1 := n; simp [ENat.add_one_le_iff, lt_chromaticNumber_iff_not_colorable]
-
-lemma Coloring.injective_comp_of_pairwise_adj (C : G.Coloring α) (f : ι → V)
-    (hf : Pairwise fun i j ↦ G.Adj (f i) (f j)) : (C ∘ f).Injective :=
-  Function.injective_iff_pairwise_ne.2 fun _i _j hij ↦ C.valid <| hf hij
-
-lemma Colorable.card_le_of_pairwise_adj (hG : G.Colorable n) (f : ι → V)
-    (hf : Pairwise fun i j ↦ G.Adj (f i) (f j)) : Nat.card ι ≤ n := by
-  obtain ⟨C⟩ := hG
-  simpa using Nat.card_le_card_of_injective _ (C.injective_comp_of_pairwise_adj f hf)
-
-lemma le_chromaticNumber_of_pairwise_adj (hn : n ≤ Nat.card ι) (f : ι → V)
-    (hf : Pairwise fun i j ↦ G.Adj (f i) (f j)) : n ≤ G.chromaticNumber :=
-  le_chromaticNumber_iff_colorable.2 fun _m hm ↦ hn.trans <| hm.card_le_of_pairwise_adj f hf
 
 lemma card_div_indepNum_le_chromaticNumber : ⌈(Nat.card V / α(G) : ℚ≥0)⌉₊ ≤ G.chromaticNumber := by
   cases finite_or_infinite V
@@ -67,7 +51,8 @@ lemma card_div_indepNum_le_chromaticNumber : ⌈(Nat.card V / α(G) : ℚ≥0)�
   refine Finset.card_mul_le_card_mul (c · = ·)
     (by simp [Finset.bipartiteAbove, Finset.filter_nonempty_iff])
     fun b _ ↦ IsIndepSet.card_le_indepNum ?_
-  simpa [IsIndepSet, Set.Pairwise] using fun x hx y hy _ ↦ c.not_adj_of_mem_colorClass hx hy
+  simpa [IsIndepSet, Set.Pairwise] using
+    fun x hx y hy _ ↦ c.not_adj_of_mem_colorClass (by exact hx) (by exact hy)
 
 instance (f : ι → V) : Std.Symm fun i j ↦ G.Adj (f i) (f j) where symm _ _ := .symm
 
