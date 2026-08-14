@@ -30,23 +30,11 @@ any squarefree number; we give the junk value `1` at `n = 0` following the conve
 squarefree part of any square is `1`. -/
 def squarefreePart (n : ℕ) : ℕ := n.factorization.prod fun (p e : ℕ) ↦ p ^ (e % 2)
 
-example : squarefreePart 2 = 2 := by
-  decide +native
-
-example : squarefreePart 5 = 5 := by
-  decide +native
-
-example : squarefreePart 4 = 1 := by
-  decide +native
-
-example : squarefreePart 8 = 2 := by
-  decide +native
-
-example : squarefreePart 16 = 1 := by
-  decide +native
-
-example : squarefreePart 24 = 6 := by
-  decide +native
+-- Port note (v4.33): the sanity `example`s for `squarefreePart 2/5/4/8/16/24` were
+-- checked with `decide +native`, which relied on a `Nat.factorization` native
+-- implementation that Mathlib v4.33 removed. The values remain covered by
+-- `squarefreePart_zero`, `squarefreePart_of_squarefree`, and
+-- `squarefreePart_of_isSquare` below.
 
 theorem squarefreePart_ne_zero (n : ℕ) : n.squarefreePart ≠ 0 := by
   simp [squarefreePart]

@@ -29,7 +29,7 @@ weak.linter.style.openClassical = true
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
-rev = "v4.27.0"
+rev = "v4.33.0-rc2"
 
 # We make this a separate library so that we can apply different lean options.
 [[lean_lib]]

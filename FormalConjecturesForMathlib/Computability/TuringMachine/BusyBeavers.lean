@@ -18,7 +18,7 @@ module
 public import FormalConjecturesForMathlib.Computability.TuringMachine.PostTuringMachine
 public import Mathlib.Computability.TuringMachine
 public import Mathlib.Data.Nat.Lattice
-public import Mathlib.Data.Nat.PartENat
+public import Mathlib.Data.ENat.Lattice
 
 @[expose] public section
 
@@ -118,7 +118,7 @@ def init (l : List Γ) : Cfg Γ Λ := ⟨some default, Tape.mk₁ l⟩
 /-- Evaluate a Turing machine on initial input to a final state,
   if it terminates. -/
 def eval (M : Machine Γ Λ) (l : List Γ) : Part (ListBlank Γ) :=
-  (Turing.eval (step M) (init l)).map fun c ↦ c.tape.right₀
+  (StateTransition.eval (step M) (init l)).map fun c ↦ c.tape.right₀
 
 def multiStep (M : Machine Γ Λ) (config : Cfg Γ Λ) (n : ℕ) : Option (Cfg Γ Λ) :=
     (Option.bind · (step M))^[n] config
