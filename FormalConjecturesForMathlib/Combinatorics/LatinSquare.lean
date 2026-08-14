@@ -39,7 +39,12 @@ There are finitely many latin squares of order `n`, since each is determined by 
 the finite type `Matrix (Fin n) (Fin n) (Fin n)`. This is useful for defining the maximum number of
 transversals over all latin squares of order `n`.
 -/
-instance : Fintype (LatinSquare n) :=
+noncomputable instance : Fintype (LatinSquare n) :=
+  -- Port note (v4.33): classical decidability is no longer synthesized for the
+  -- subtype below; supply it locally.
+  letI : DecidablePred (fun mat : Matrix (Fin n) (Fin n) (Fin n) =>
+      (∀ i, Function.Injective (mat i)) ∧ ∀ j, Function.Injective (mat.transpose j)) :=
+    fun _ => Classical.propDecidable _
   Fintype.ofEquiv
     {mat : Matrix (Fin n) (Fin n) (Fin n) //
       (∀ i, Function.Injective (mat i)) ∧ (∀ j, Function.Injective (mat.transpose j))}

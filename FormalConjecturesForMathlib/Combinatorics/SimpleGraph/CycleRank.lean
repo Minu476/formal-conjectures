@@ -16,6 +16,8 @@ limitations under the License.
 module
 
 public import Mathlib.Combinatorics.SimpleGraph.Connectivity.WalkCounting
+public import Mathlib.Combinatorics.SimpleGraph.Connectivity.Connected
+public import Mathlib.Combinatorics.SimpleGraph.Connectivity.Finite
 
 @[expose] public section
 
