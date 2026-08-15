@@ -46,6 +46,19 @@ theorem first_three_odd_primes : ({3, 5, 7} : Set ℕ).IsPrimeProgressionOfLengt
   · norm_num [exists_lt_succ_right, or_assoc, eq_comm, Set.insert_def,
     show (2).nth Nat.Prime = 5 from nth_count prime_five,
     show (3).nth Nat.Prime = 7 from Nat.nth_count (by decide : (7).Prime)]
+    ext y
+    simp only [Set.mem_setOf_eq]
+    have h3 : (1).nth Nat.Prime = 3 := Nat.nth_count (by decide : (3).Prime)
+    have h5 : (2).nth Nat.Prime = 5 := nth_count prime_five
+    constructor
+    · rintro (rfl | rfl | rfl)
+      · exact Or.inl ⟨0, by omega, by rw [show 1 + 0 = 1 from rfl]; rw [h3]⟩
+      · exact Or.inl ⟨1, by omega, by rw [show 1 + 1 = 2 from rfl]; rw [h5]⟩
+      · exact Or.inr rfl
+    · rintro (⟨m, _hm, rfl⟩ | rfl)
+      · interval_cases m <;> simp [h3, h5]
+      · right; right; rfl
+    
 
 /--
 The predicate that a set `s` is both an arithmetic progression of length `l` and a progression
@@ -66,6 +79,17 @@ theorem exists_three_consecutive_primes_in_ap : ∃ (s : Set ℕ), s.IsAPAndPrim
     constructor
     · aesop
     · norm_num [exists_lt_succ_right, or_assoc, eq_comm, Set.insert_def]
+      -- v4.33 port: the arithmetic-progression set equality, finished by cases
+      ext y
+      simp only [Set.mem_setOf_eq]
+      constructor
+      · rintro (rfl | rfl | rfl)
+        · exact Or.inl ⟨0, by omega, by omega⟩
+        · exact Or.inl ⟨1, by omega, by omega⟩
+        · exact Or.inr rfl
+      · rintro (⟨m, _hm, rfl⟩ | rfl)
+        · interval_cases m <;> omega
+        · right; right; rfl
   · exact first_three_odd_primes
 
 /--

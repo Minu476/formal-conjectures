@@ -157,6 +157,10 @@ def proves (L : NormalModalLogic) (φ : Formula) := φ ∈ L.thms
 
 
 scoped infixr:85 " ⊢ " => proves
+-- v4.33 port: Mathlib's order-subset notation lacks a quot_precheck instance,
+-- which blocks elaboration of this scoped notation and cascades into the
+-- theorem statements resolving to the generic `⊆`.
+set_option quotPrecheck false in
 scoped notation L " ⊆ " L' =>
   NormalModalLogic.thms L ⊆ NormalModalLogic.thms L'
 
@@ -191,7 +195,8 @@ by the boxdot translation is included in KT.
 @[category research solved, AMS 3, formal_proof using lean4 at "https://github.com/FormalizedFormalLogic/Foundation"]
 -- The formal proof was done by Mashu Noguchi et al.
 -- see linked repo for the full list of contributors
-theorem BoxdotConjecture (L : NormalModalLogic) (H : ∀ φ, L ⊢ ■ φ ↔ KT ⊢ φ) : L ⊆ KT := by
+theorem BoxdotConjecture (L : NormalModalLogic)
+    (H : ∀ φ, L ⊢ ■ φ ↔ KT ⊢ φ) : NormalModalLogic.thms L ⊆ NormalModalLogic.thms KT := by
   sorry
 
 end Arxiv.«1308.0994»

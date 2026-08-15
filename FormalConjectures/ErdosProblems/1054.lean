@@ -150,6 +150,13 @@ theorem f_undefined_at_3 : f 5 = 0 := by
         rw [Nat.Iio_eq_range, Finset.sum_range_succ, Finset.sum_range_succ,
           Finset.sum_range_one, hg0] at hsub
         rw [Nat.Iio_eq_range] at hsum
+        -- v4.33 port: omega saw hsum's and hsub's sums as distinct atoms
+        -- (different elaborated instance args); restate hsub in hsum's exact
+        -- form so there is a single atom.
+        -- v4.33 port: `∑ i < k` elaborates to a sum over `Finset.Iio k`, while
+        -- `Nat.Iio_eq_range` rewrote hsum's to `Finset.range k` — omega treated
+        -- them as distinct atoms. Align hsub the same way.
+        rw [Nat.Iio_eq_range] at hsub
         omega
 
 end Erdos1054
