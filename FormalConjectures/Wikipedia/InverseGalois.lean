@@ -34,10 +34,15 @@ structure GaloisRealization (K G : Type*) [Field K] [Group G] where
 /--
 Say a group `G` is realizable over a field `K` if it
 is isomorphic to the Galois group of a Galois extension
-of `K`
+of `K`.
+
+Port note (v4.33): the class field can no longer reference the structure with an
+unresolved auto-bound universe (`Type*` in `GaloisRealization.L`). The field is stated
+as an explicit existential, which binds `L`'s universe inside the proposition.
 -/
-class IsRealizable (K G : Type*) [Field K] [Group G] where
-  exists_realization : Nonempty (GaloisRealization K G)
+class IsRealizable (K G : Type*) [Field K] [Group G] : Prop where
+  exists_realization : ∃ (L : Type*) (_ : Field L) (_ : Algebra K L),
+    IsGalois K L ∧ Nonempty (G ≃* (L ≃ₐ[K] L))
 
 /--
 The **Inverse Galois Problem**: every finite group is
