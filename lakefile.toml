@@ -31,6 +31,12 @@ name = "mathlib"
 scope = "leanprover-community"
 rev = "v4.33.0-rc2"
 
+# NexusVerifier transition dumper as a local sub-package (module-file corpus
+# files can import cross-package module files, same as Mathlib).
+[[require]]
+name = "NexusDump"
+path = "NexusDump"
+
 # We make this a separate library so that we can apply different lean options.
 [[lean_lib]]
 name = "FormalConjecturesForMathlib"

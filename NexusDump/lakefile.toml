@@ -1,0 +1,11 @@
+name = "NexusDump"
+version = "0.1.0"
+defaultTargets = ["NexusDump"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.33.0-rc2"
+
+[[lean_lib]]
+name = "NexusDump"
